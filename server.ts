@@ -104,7 +104,7 @@ async function startServer() {
     }
 
     try {
-      const exportId = `cut_${jobId}_${Math.floor(start)}_${Math.floor(end)}.mp4`;
+      const exportId = `cut_v2_9x16_${jobId}_${Math.floor(start)}_${Math.floor(end)}.mp4`;
       const outputPath = path.join("exports", exportId);
       
       if (!fs.existsSync(outputPath)) {

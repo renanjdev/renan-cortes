@@ -1,67 +1,125 @@
 import { OpenAI } from "openai";
+import PQueue from "p-queue";
 
 function getAIClient() {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
-    throw new Error("OPENAI_API_KEY não configurada no servidor.");
+    throw new Error("OPENAI_API_KEY nao configurada no servidor.");
   }
   return new OpenAI({ apiKey });
 }
 
-export async function analyzeSegments(segments: any[]): Promise<any[]> {
-  const analyzedSegments = [];
+function normalizeScore(score: unknown) {
+  const parsed = typeof score === "number" ? score : Number(score);
+  if (!Number.isFinite(parsed)) return 20;
+  return Math.max(20, Math.min(100, Math.round(parsed)));
+}
 
-  for (const segment of segments) {
-    const analysis = await analyzeWithAI(segment.text);
-    analyzedSegments.push({
-      ...segment,
-      ...analysis
-    });
+function safeJSONParse(content: string) {
+  try {
+    return JSON.parse(content);
+  } catch {
+    return {};
   }
+}
+
+export async function analyzeSegments(segments: any[]): Promise<any[]> {
+  const queue = new PQueue({ concurrency: 4 });
+
+  const analyzedSegments = await Promise.all(
+    segments.map((segment, i) =>
+      queue.add(async () => {
+        const analysis = await analyzeWithAI({
+          text: segment.text,
+          prev: segments[i - 1]?.text || "",
+          next: segments[i + 1]?.text || "",
+        });
+
+        return {
+          ...segment,
+          ...analysis,
+          score: normalizeScore(analysis.score),
+        };
+      }),
+    ),
+  );
 
   return analyzedSegments
+    .filter((segment) => segment.score >= 20)
     .sort((a, b) => b.score - a.score)
-    .slice(0, 3);
+    .reduce((acc: any[], current) => {
+      const overlapsTooMuch = acc.some((item) => {
+        const overlapStart = Math.max(item.start, current.start);
+        const overlapEnd = Math.min(item.end, current.end);
+        const overlap = Math.max(0, overlapEnd - overlapStart);
+        const shorterDuration = Math.min(item.end - item.start, current.end - current.start);
+        return shorterDuration > 0 && overlap / shorterDuration > 0.85;
+      });
+
+      if (!overlapsTooMuch) {
+        acc.push(current);
+      }
+
+      return acc;
+    }, []);
 }
 
 export async function analyzeFromContext(metadata: any): Promise<any[]> {
   const openai = getAIClient();
-  
-  const promptFinal = `Você é especialista em estratégia de conteúdo viral.
-Analise os metadados do vídeo "${metadata.title}" e sugira os 3 melhores possíveis cortes.
 
-DADOS DO VÍDEO:
-Título: ${metadata.title}
-Descricao: ${metadata.description || 'Não disponível'}
+  const prompt = `Você é um especialista em estratégia de conteúdo viral.
 
-OBJETIVO:
-Crie 3 sugestões de "Cortes Ideais" que este vídeo provavelmente contém.
+Analise os metadados do vídeo e sugira cortes com potencial de retenção.
 
-Retorne JSON exatamente neste formato (array de objetos):
-[
-  {
-    "score": number (80-100),
-    "hook": "proposta de hook impactante para este tema",
-    "motivo": "Explicação técnica do porquê este trecho tem alto potencial de retenção",
-    "start": number,
-    "end": number
-  }
-]`;
+---
+
+TÍTULO: ${metadata.title}
+DESCRIÇÃO: ${metadata.description || "Não disponível"}
+
+---
+
+CRITÉRIOS:
+- curiosidade
+- clareza
+- potencial de prender atenção
+
+---
+
+Retorne JSON:
+
+{
+  "cuts": [
+    {
+      "score": number,
+      "hook": "hook impactante",
+      "motivo": "explicação objetiva",
+      "start": number,
+      "end": number
+    }
+  ]
+}`;
 
   try {
     const response = await openai.chat.completions.create({
       model: "gpt-4o",
-      messages: [{ role: "user", content: promptFinal }],
-      response_format: { type: "json_object" }
+      messages: [{ role: "user", content: prompt }],
+      response_format: { type: "json_object" },
     });
-    
+
     const content = response.choices[0].message.content || "{}";
-    const data = JSON.parse(content);
-    const results = Array.isArray(data) ? data : (data.cuts || data.results || []);
-    
-    return results.length > 0 ? results : getFallbackSimulation(metadata);
+    const data = safeJSONParse(content);
+    const results = Array.isArray(data) ? data : data.cuts || [];
+
+    return results
+      .map((r: any) => ({
+        ...r,
+        score: normalizeScore(r.score),
+      }))
+      .filter((r: any) => r.score >= 20)
+      .sort((a: any, b: any) => b.score - a.score)
+      .slice(0, 25);
   } catch (error) {
-    console.error("OpenAI Context Analysis error:", error);
+    console.error("Context Analysis error:", error);
     return getFallbackSimulation(metadata);
   }
 }
@@ -70,57 +128,130 @@ function getFallbackSimulation(metadata: any) {
   return [
     {
       score: 92,
-      hook: "O segredo por trás de " + metadata.title,
-      motivo: "Análise baseada na autoridade do tema. Este assunto costuma gerar alta retenção.",
+      hook: `O segredo por trás de ${metadata.title}`,
+      motivo: "Simulação baseada em retenção.",
       start: 30,
-      end: 65
+      end: 65,
     },
-    {
-      score: 85,
-      hook: "Por que você está fazendo isso errado...",
-      motivo: "Quebra de padrão identificada no contexto do título.",
-      start: 150,
-      end: 185
-    }
   ];
 }
 
-async function analyzeWithAI(text: string) {
+async function analyzeWithAI({
+  text,
+  prev,
+  next,
+}: {
+  text: string;
+  prev: string;
+  next: string;
+}) {
   const openai = getAIClient();
 
-  const prompt = `Você é especialista em retenção de vídeos curtos.
+  const prompt = `Você é um especialista em retenção de vídeos curtos (TikTok, Reels, Shorts) com foco em comportamento humano.
 
-Analise o trecho abaixo considerando:
-- início forte (hook)
-- emoção / intensidade
-- clareza da mensagem
-- ritmo da fala
-- capacidade de prender atenção
+Sua função NÃO é apenas analisar.
+Você deve JULGAR e MELHORAR o trecho.
 
-Texto do trecho:
-"${text}"
+---
 
-Retorne JSON exatamente neste formato:
+OBJETIVO:
+Determinar se o trecho faria alguém:
+- parar o scroll
+- assistir até o final
+
+---
+
+CONTEXTO ANTERIOR:
+${prev}
+
+TRECHO:
+${text}
+
+CONTEXTO POSTERIOR:
+${next}
+
+---
+
+CRITÉRIOS:
+
+1. IMPACTO INICIAL (primeiros 3s)
+2. CURIOSIDADE ou TENSÃO
+3. CLAREZA
+4. PROGRESSÃO
+5. FINAL (payoff)
+
+---
+
+ESCALA:
+
+90–100 → extremamente viciante  
+70–89 → forte  
+40–69 → ok  
+20–39 → fraco  
+
+---
+
+REGRAS:
+
+- NÃO seja genérico
+- NÃO use hooks clichês
+- Se o início for fraco, penalize fortemente
+- A maioria dos trechos NÃO é excepcional
+
+---
+
+HOOK:
+Reescreva o início usando:
+- alerta
+- erro
+- curiosidade
+- quebra de padrão
+
+---
+
+PROIBIDO:
+"vou te explicar"
+"isso é importante"
+"preste atenção"
+
+---
+
+OUTPUT:
+
 {
-  "score": number (0-100),
-  "hook": "proposta de hook impactante para este trecho",
-  "motivo": "explicação técnica do porquê este trecho tem alto potencial de retenção"
-}`;
+  "score": number,
+  "hook": "hook reescrito com alta retenção",
+  "motivo": "explicação crítica objetiva"
+}
+
+---
+
+IMPORTANTE:
+Se não houver potencial real:
+- score abaixo de 40
+`;
 
   try {
     const response = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [{ role: "user", content: prompt }],
-      response_format: { type: "json_object" }
+      response_format: { type: "json_object" },
     });
-    
-    return JSON.parse(response.choices[0].message.content || "{}");
-  } catch (error) {
-    console.error("OpenAI Analysis error:", error);
+
+    const parsed = safeJSONParse(
+      response.choices[0].message.content || "{}"
+    );
+
     return {
-      score: 50,
+      ...parsed,
+      score: normalizeScore(parsed.score),
+    };
+  } catch (error) {
+    console.error("Segment Analysis error:", error);
+    return {
+      score: 20,
       hook: "Erro na análise",
-      motivo: "Erro ao processar com OpenAI"
+      motivo: "Falha ao processar com IA.",
     };
   }
 }

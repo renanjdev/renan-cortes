@@ -1,7 +1,22 @@
-import React, { useState, useEffect } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
-import { Youtube, Scissors, Loader2, CheckCircle2, AlertCircle, PlayCircle, Trophy, Sparkles, Download } from 'lucide-react';
-import { VideoPlayer } from './components/VideoPlayer';
+import React, { useEffect, useMemo, useState } from "react";
+import { AnimatePresence, motion } from "motion/react";
+import {
+  AlertCircle,
+  ArrowRight,
+  CheckCircle2,
+  Clock3,
+  Download,
+  FileVideo,
+  Link2,
+  Loader2,
+  PlayCircle,
+  Scissors,
+  Sparkles,
+  Trophy,
+  Upload,
+  Youtube,
+} from "lucide-react";
+import { VideoPlayer } from "./components/VideoPlayer";
 
 interface Result {
   start: number;
@@ -10,136 +25,144 @@ interface Result {
   hook: string;
   motivo: string;
   text?: string;
+  downloadUrl?: string;
+  exportId?: string;
 }
 
 interface JobStatus {
   id: string;
-  status: 'pending' | 'processing' | 'completed' | 'failed';
+  status: "pending" | "processing" | "completed" | "failed";
   progress: number;
   result?: Result[];
   error?: string;
   filePath?: string;
 }
 
+type InputMode = "youtube" | "upload";
+
 export default function App() {
-  const [url, setUrl] = useState('');
+  const [mode, setMode] = useState<InputMode>("youtube");
+  const [url, setUrl] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [jobStatus, setJobStatus] = useState<JobStatus | null>(null);
-  const [previewCut, setPreviewCut] = useState<{ videoId?: string, videoUrl?: string, start: number, end: number } | null>(null);
+  const [previewCut, setPreviewCut] = useState<{ videoId?: string; videoUrl?: string; start: number; end: number } | null>(null);
   const [exportingIndex, setExportingIndex] = useState<number | null>(null);
-  const [serverStatus, setServerStatus] = useState<'checking' | 'online' | 'offline'>('checking');
+  const [serverStatus, setServerStatus] = useState<"checking" | "online" | "offline">("checking");
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
 
   useEffect(() => {
-    fetch('/api/health')
-      .then(res => res.ok ? setServerStatus('online') : setServerStatus('offline'))
-      .catch(() => setServerStatus('offline'));
+    fetch("/api/health")
+      .then((res) => setServerStatus(res.ok ? "online" : "offline"))
+      .catch(() => setServerStatus("offline"));
   }, []);
 
-  const handleExport = async (cut: Result, index: number) => {
-    if (!activeJobId) return;
-    
-    setExportingIndex(index);
-    try {
-      const response = await fetch('/api/export', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          jobId: activeJobId,
-          start: cut.start,
-          end: cut.end
-        }),
-      });
+  useEffect(() => {
+    let interval: number;
 
-      const data = await response.json();
-      if (data.downloadUrl) {
-        // Trigger download
-        const a = document.createElement('a');
-        a.href = data.downloadUrl;
-        a.download = `corte_${activeJobId}.mp4`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-      } else {
-        alert(data.error || "Erro ao exportar vídeo.");
-      }
-    } catch (error) {
-      console.error("Export error:", error);
-      alert("Erro na conexão ao exportar.");
-    } finally {
-      setExportingIndex(null);
+    if (activeJobId && (jobStatus?.status === "pending" || jobStatus?.status === "processing")) {
+      interval = window.setInterval(async () => {
+        try {
+          const response = await fetch(`/api/status/${activeJobId}`);
+          const data = await response.json();
+          setJobStatus(data);
+
+          if (data.status === "completed" || data.status === "failed") {
+            clearInterval(interval);
+          }
+        } catch (error) {
+          console.error("Error polling status:", error);
+        }
+      }, 2000);
     }
-  };
 
-  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+    return () => clearInterval(interval);
+  }, [activeJobId, jobStatus?.status]);
+
+  const canSubmit = useMemo(() => {
+    if (mode === "youtube") return Boolean(url.trim()) && !isSubmitting;
+    return Boolean(file) && !isSubmitting;
+  }, [mode, url, file, isSubmitting]);
+
+  const statusLabel = useMemo(() => {
+    if (!jobStatus) return "Pronto";
+    if (jobStatus.status === "pending") return "Na fila";
+    if (jobStatus.status === "processing") return "Processando";
+    if (jobStatus.status === "completed") return "Concluido";
+    return "Falhou";
+  }, [jobStatus]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!url && !file) return;
+    if (!canSubmit) return;
 
     setIsSubmitting(true);
     setUploadProgress(null);
-    
+    setJobStatus(null);
+    setPreviewCut(null);
+
     try {
-      let responseData;
-      if (file) {
+      let responseData: any;
+
+      if (mode === "upload" && file) {
         responseData = await new Promise((resolve, reject) => {
           const xhr = new XMLHttpRequest();
           const formData = new FormData();
-          formData.append('video', file);
+          formData.append("video", file);
 
-          xhr.upload.addEventListener('progress', (e) => {
-            if (e.lengthComputable) {
-              const percent = Math.round((e.loaded * 100) / e.total);
+          xhr.upload.addEventListener("progress", (event) => {
+            if (event.lengthComputable) {
+              const percent = Math.round((event.loaded * 100) / event.total);
               setUploadProgress(percent);
             }
           });
 
-          xhr.addEventListener('load', () => {
+          xhr.addEventListener("load", () => {
             if (xhr.status >= 200 && xhr.status < 300) {
               try {
                 resolve(JSON.parse(xhr.responseText));
-              } catch (e) {
-                reject(new Error("Resposta do servidor inválida"));
+              } catch {
+                reject(new Error("Resposta invalida do servidor."));
               }
-            } else {
-              let errorMessage = `Erro no upload: ${xhr.status} ${xhr.statusText}`;
-              try {
-                const response = JSON.parse(xhr.responseText);
-                if (response.error) errorMessage += ` - ${response.error}`;
-              } catch (e) {}
-              reject(new Error(errorMessage));
+              return;
             }
+
+            let errorMessage = `Erro no upload: ${xhr.status} ${xhr.statusText}`;
+            try {
+              const response = JSON.parse(xhr.responseText);
+              if (response.error) errorMessage += ` - ${response.error}`;
+            } catch {}
+            reject(new Error(errorMessage));
           });
 
-          xhr.addEventListener('error', () => reject(new Error("Falha na conexão de rede")));
-          xhr.open('POST', '/api/upload');
+          xhr.addEventListener("error", () => reject(new Error("Falha na conexao de rede.")));
+          xhr.open("POST", "/api/upload");
           xhr.send(formData);
         });
       } else {
-        const response = await fetch('/api/process', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+        const response = await fetch("/api/process", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ url }),
         });
+
         responseData = await response.json();
       }
 
-      const data = responseData as any;
-      if (data.jobId) {
-        setActiveJobId(data.jobId);
-        setJobStatus({ id: data.jobId, status: 'pending', progress: 0 });
-      } else if (data.error) {
-        setJobStatus({ id: 'error', status: 'failed', progress: 0, error: data.error });
+      if (responseData.jobId) {
+        setActiveJobId(responseData.jobId);
+        setJobStatus({ id: responseData.jobId, status: "pending", progress: 0 });
+      } else if (responseData.error) {
+        setJobStatus({ id: "error", status: "failed", progress: 0, error: responseData.error });
       }
     } catch (error: any) {
-      console.error('Error starting process:', error);
-      setJobStatus({ 
-        id: 'error', 
-        status: 'failed', 
-        progress: 0, 
-        error: `Erro ao iniciar processo: ${error.message || 'Verifique sua conexão ou o tamanho do arquivo'}` 
+      console.error("Error starting process:", error);
+      setJobStatus({
+        id: "error",
+        status: "failed",
+        progress: 0,
+        error: `Erro ao iniciar processo: ${error.message || "verifique a conexao ou o arquivo enviado."}`,
       });
     } finally {
       setIsSubmitting(false);
@@ -147,363 +170,451 @@ export default function App() {
     }
   };
 
-  useEffect(() => {
-    let interval: number;
-    if (activeJobId && (jobStatus?.status === 'pending' || jobStatus?.status === 'processing')) {
-      interval = window.setInterval(async () => {
-        try {
-          const response = await fetch(`/api/status/${activeJobId}`);
-          const data = await response.json();
-          setJobStatus(data);
-          
-          if (data.status === 'completed' || data.status === 'failed') {
-            clearInterval(interval);
-          }
-        } catch (error) {
-          console.error('Error polling status:', error);
-        }
-      }, 2000);
+  const handleExport = async (cut: Result, index: number) => {
+    if (!activeJobId) return;
+
+    setExportingIndex(index);
+    try {
+      if (cut.downloadUrl) {
+        const a = document.createElement("a");
+        a.href = cut.downloadUrl;
+        a.download = cut.exportId || `corte_${activeJobId}.mp4`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        return;
+      }
+
+      const response = await fetch("/api/export", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jobId: activeJobId,
+          start: cut.start,
+          end: cut.end,
+        }),
+      });
+
+      const data = await response.json();
+      if (data.downloadUrl) {
+        const a = document.createElement("a");
+        a.href = data.downloadUrl;
+        a.download = `corte_${activeJobId}.mp4`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      } else {
+        alert(data.error || "Erro ao exportar video.");
+      }
+    } catch (error) {
+      console.error("Export error:", error);
+      alert("Erro na conexao ao exportar.");
+    } finally {
+      setExportingIndex(null);
     }
-    return () => clearInterval(interval);
-  }, [activeJobId, jobStatus?.status]);
+  };
+
+  const openPreview = (cut: Result) => {
+    if (jobStatus?.filePath) {
+      const normalized = jobStatus.filePath.replace(/\\/g, "/");
+      const videoUrl = normalized.startsWith("uploads/") ? `/${normalized}` : `/uploads/${normalized.split("/").pop()}`;
+      setPreviewCut({ videoUrl, start: cut.start, end: cut.end });
+      return;
+    }
+
+    const videoId = extractYoutubeId(url);
+    if (videoId) {
+      setPreviewCut({ videoId, start: cut.start, end: cut.end });
+      return;
+    }
+
+    alert("Nao foi possivel carregar a previa deste video.");
+  };
 
   return (
-    <div className="min-h-screen bg-[#050505] text-[#e0e0e0] font-sans selection:bg-teal-500/30 flex flex-col">
-      {/* Background decoration */}
-      <div className="fixed inset-0 overflow-hidden pointer-events-none">
-        <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] rounded-full bg-blue-600/10 blur-[120px]" />
-        <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] rounded-full bg-teal-500/10 blur-[120px]" />
+    <div className="min-h-screen bg-[#050505] text-white">
+      <div className="fixed inset-0 pointer-events-none">
+        <div className="absolute inset-x-0 top-0 h-24 bg-white/[0.03]" />
+        <div className="absolute left-[-12%] top-24 h-[28rem] w-[28rem] rounded-full bg-lime-500/12 blur-[140px]" />
+        <div className="absolute right-[-8%] top-40 h-[32rem] w-[32rem] rounded-full bg-emerald-500/10 blur-[160px]" />
       </div>
 
-      <header className="h-16 border-b border-white/10 flex items-center justify-between px-8 bg-black/40 backdrop-blur-md z-20 relative">
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 bg-gradient-to-br from-teal-400 to-blue-600 rounded-lg flex items-center justify-center shadow-lg shadow-teal-500/20">
-            <Scissors size={18} className="text-white" />
+      <header className="relative z-10 border-b border-white/8">
+        <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-5">
+          <div className="flex items-center gap-3">
+            <div className="flex h-11 w-11 items-center justify-center rounded-lg border border-lime-400/30 bg-lime-400/10">
+              <Scissors className="h-5 w-5 text-lime-300" />
+            </div>
+            <div>
+              <div className="text-lg font-semibold tracking-tight">Cortes IA</div>
+              <div className="text-xs text-white/45">Recorte viral para YouTube e arquivos locais</div>
+            </div>
           </div>
-          <h1 className="text-xl font-bold tracking-tighter uppercase italic">Cortes <span className="text-teal-400">IA</span></h1>
-          <span className="hidden sm:inline ml-4 text-[10px] bg-white/5 border border-white/10 px-2 py-0.5 rounded text-white/40 uppercase tracking-widest font-mono">v1.0.4-engine</span>
-        </div>
-        <div className="flex items-center gap-6">
-          <div className="flex items-center gap-2">
-            <div className={`w-2 h-2 rounded-full ${
-              serverStatus === 'online' ? 'bg-teal-500' : 
-              serverStatus === 'offline' ? 'bg-red-500' : 'bg-amber-500 animate-pulse'
-            }`}></div>
-            <span className="text-[10px] text-white/60 font-mono uppercase">
-              Engine: {serverStatus === 'online' ? 'Connected' : serverStatus === 'offline' ? 'Disconnected' : 'Checking...'}
-            </span>
-          </div>
-          <div className="flex items-center gap-2">
-            <div className={`w-2 h-2 rounded-full ${activeJobId ? 'bg-teal-500 animate-pulse' : 'bg-slate-700'}`}></div>
-            <span className="text-[10px] text-white/60 font-mono uppercase">Status: {activeJobId ? 'Processing' : 'Idle'}</span>
+
+          <div className="flex items-center gap-3 text-xs">
+            <StatusPill
+              label={serverStatus === "online" ? "Servidor online" : serverStatus === "offline" ? "Servidor offline" : "Verificando"}
+              tone={serverStatus === "online" ? "green" : serverStatus === "offline" ? "red" : "neutral"}
+            />
+            <StatusPill
+              label={statusLabel}
+              tone={
+                jobStatus?.status === "completed"
+                  ? "green"
+                  : jobStatus?.status === "failed"
+                    ? "red"
+                    : jobStatus?.status
+                      ? "neutral"
+                      : "neutral"
+              }
+            />
           </div>
         </div>
       </header>
 
-      <main className="relative z-10 max-w-5xl mx-auto w-full px-6 py-12 flex-1">
-        <header className="text-center mb-12">
-          <motion.p 
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="text-teal-400 text-[10px] uppercase tracking-[0.2em] font-bold mb-2"
-          >
-            Motor de Geração de Cortes Virais
-          </motion.p>
-          <motion.p 
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.1 }}
-            className="text-slate-400 text-lg max-w-xl mx-auto"
-          >
-            Transforme vídeos em trechos de alta retenção com análise de IA especializada.
-          </motion.p>
-        </header>
+      <main className="relative z-10">
+        <section className="mx-auto max-w-7xl px-6 pb-10 pt-14">
+          <div className="mx-auto max-w-4xl text-center">
+            <div className="mb-4 inline-flex items-center gap-2 rounded-full border border-lime-400/20 bg-lime-400/10 px-3 py-1 text-[11px] font-medium text-lime-300">
+              <Sparkles className="h-3.5 w-3.5" />
+              encontre os melhores cortes sem sair da primeira tela
+            </div>
+            <h1 className="mx-auto max-w-3xl text-5xl font-semibold tracking-tight text-white sm:text-6xl">
+              Gere cortes virais a partir de um link ou de um video enviado.
+            </h1>
+            <p className="mx-auto mt-5 max-w-2xl text-lg leading-8 text-white/62">
+              Cole a URL do YouTube ou envie um arquivo. O sistema transcreve, segmenta e prioriza os trechos com maior potencial de retencao.
+            </p>
+          </div>
 
-        <section className="mb-12">
-          <motion.div
-            initial={{ opacity: 0, scale: 0.98 }}
-            animate={{ opacity: 1, scale: 1 }}
-            transition={{ delay: 0.2 }}
-            className="flex flex-col gap-6 p-6 bg-white/5 backdrop-blur-xl rounded-2xl border border-white/10 shadow-2xl"
-          >
-            <form onSubmit={handleSubmit} className="space-y-6">
-              {/* URL Input */}
-              <div className="space-y-2">
-                <label className="text-[10px] uppercase tracking-widest font-bold text-white/40 flex items-center gap-2">
-                  <Youtube size={14} className="text-red-500" />
-                  Opção 1: Link do YouTube (Transcrição rápida)
-                </label>
-                <div className="flex items-center px-4 gap-3 bg-black/40 rounded-xl border border-white/5 group focus-within:border-teal-500/50 transition-all">
-                  <input 
-                    type="url" 
-                    placeholder="https://www.youtube.com/watch?v=..." 
-                    className="w-full bg-transparent border-none outline-none text-slate-100 placeholder:text-slate-700 py-3.5 text-sm font-mono"
-                    value={url}
-                    onChange={(e) => {
-                      setUrl(e.target.value);
-                      if (e.target.value) setFile(null); // Clear file if URL provided
+          <div className="mx-auto mt-10 max-w-5xl">
+            <div className="grid gap-8 lg:grid-cols-[minmax(0,1.5fr)_minmax(320px,0.8fr)]">
+              <section className="rounded-[24px] border border-white/10 bg-black/40 p-5 shadow-[0_0_0_1px_rgba(255,255,255,0.02)] backdrop-blur-xl">
+                <div className="flex flex-wrap items-center gap-3 border-b border-white/8 pb-4">
+                  <ModeButton
+                    active={mode === "youtube"}
+                    icon={Youtube}
+                    label="Link do YouTube"
+                    onClick={() => {
+                      setMode("youtube");
+                      setFile(null);
+                    }}
+                  />
+                  <ModeButton
+                    active={mode === "upload"}
+                    icon={Upload}
+                    label="Upload de arquivo"
+                    onClick={() => {
+                      setMode("upload");
+                      setUrl("");
                     }}
                   />
                 </div>
-              </div>
 
-              <div className="relative">
-                <div className="absolute inset-0 flex items-center">
-                  <div className="w-full border-t border-white/5"></div>
-                </div>
-                <div className="relative flex justify-center text-[10px] uppercase tracking-[0.3em] font-bold">
-                  <span className="bg-[#050505] px-4 text-white/20">OU</span>
-                </div>
-              </div>
+                <form onSubmit={handleSubmit} className="mt-5 space-y-5">
+                  {mode === "youtube" ? (
+                    <div className="space-y-3">
+                      <label className="block text-left text-xs font-medium uppercase tracking-[0.2em] text-white/42">
+                        URL do video
+                      </label>
+                      <div className="flex min-h-16 items-center rounded-[22px] border border-lime-400/50 bg-[#111111] pl-5 pr-2 shadow-[0_0_0_4px_rgba(132,255,92,0.06)] transition-colors focus-within:border-lime-300">
+                        <Link2 className="mr-3 h-5 w-5 shrink-0 text-lime-300" />
+                        <input
+                          type="url"
+                          value={url}
+                          onChange={(e) => {
+                            setUrl(e.target.value);
+                            if (e.target.value) setFile(null);
+                          }}
+                          placeholder="https://www.youtube.com/watch?v=..."
+                          className="h-full w-full bg-transparent text-base text-white outline-none placeholder:text-white/26"
+                        />
+                        <button
+                          type="submit"
+                          disabled={!canSubmit}
+                          className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-lime-400 text-black transition hover:bg-lime-300 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-white/25"
+                          aria-label="Gerar cortes"
+                        >
+                          {isSubmitting ? <Loader2 className="h-5 w-5 animate-spin" /> : <ArrowRight className="h-5 w-5" />}
+                        </button>
+                      </div>
+                      <div className="flex flex-wrap gap-2 text-xs text-white/45">
+                        <span className="rounded-full border border-white/10 px-3 py-1">transcricao automatica</span>
+                        <span className="rounded-full border border-white/10 px-3 py-1">analise por score</span>
+                        <span className="rounded-full border border-white/10 px-3 py-1">{"todos os cortes com score >= 20"}</span>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      <label className="block text-left text-xs font-medium uppercase tracking-[0.2em] text-white/42">
+                        Arquivo local
+                      </label>
+                      <label className="flex min-h-[220px] cursor-pointer flex-col justify-between rounded-[22px] border border-dashed border-white/14 bg-white/[0.03] p-6 transition hover:border-lime-400/40 hover:bg-white/[0.05]">
+                        <input
+                          type="file"
+                          className="hidden"
+                          accept="video/*,audio/*"
+                          onChange={(e) => {
+                            if (e.target.files?.[0]) {
+                              setFile(e.target.files[0]);
+                              setUrl("");
+                            }
+                          }}
+                        />
 
-              {/* File Upload */}
-              <div className="space-y-2">
-                <label className="text-[10px] uppercase tracking-widest font-bold text-white/40 flex items-center gap-2">
-                  <Scissors size={14} className="text-teal-500" />
-                  Opção 2: Upload de Vídeo/Áudio (IA Local)
-                </label>
-                <label 
-                  className={`
-                    relative flex flex-col items-center justify-center w-full h-32 
-                    border-2 border-dashed rounded-xl cursor-pointer
-                    transition-all duration-300 group
-                    ${file 
-                      ? 'border-teal-500 bg-teal-500/10' 
-                      : 'border-white/10 bg-black/20 hover:border-white/20 hover:bg-black/40'
-                    }
-                  `}
-                >
-                  <input 
-                    type="file" 
-                    className="hidden" 
-                    accept="video/*,audio/*"
-                    onChange={(e) => {
-                      if (e.target.files?.[0]) {
-                        setFile(e.target.files[0]);
-                        setUrl(""); // Clear URL
-                      }
-                    }}
-                  />
-                  <div className="flex flex-col items-center justify-center">
-                    {file ? (
-                      <>
-                        <CheckCircle2 size={32} className="text-teal-500 mb-2" />
-                        <p className="text-xs text-white/80 font-mono font-bold">{file.name}</p>
-                        <p className="text-[10px] text-white/40 mt-1">{(file.size / (1024 * 1024)).toFixed(2)} MB</p>
-                      </>
-                    ) : (
-                      <>
-                        <Sparkles size={32} className="text-white/10 group-hover:text-teal-500/30 transition-colors mb-2" />
-                        <p className="text-[10px] uppercase tracking-widest font-bold text-white/40 mb-1 group-hover:text-white/60">Arraste seu arquivo aqui</p>
-                        <p className="text-[9px] text-white/20">MP4, MOV, MP3 (Máx 1GB)</p>
-                      </>
-                    )}
+                        <div className="flex h-14 w-14 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.04]">
+                          <FileVideo className="h-6 w-6 text-lime-300" />
+                        </div>
+
+                        <div className="space-y-2">
+                          <div className="text-left text-xl font-semibold text-white">
+                            {file ? file.name : "Arraste ou selecione um arquivo de video"}
+                          </div>
+                          <div className="text-left text-sm leading-6 text-white/55">
+                            {file
+                              ? `${(file.size / (1024 * 1024)).toFixed(2)} MB pronto para envio`
+                              : "Compatibilidade com MP4, MOV, MP3 e outros formatos aceitos pelo navegador."}
+                          </div>
+                        </div>
+
+                        <div className="flex items-center justify-between gap-4">
+                          <div className="text-xs uppercase tracking-[0.2em] text-white/35">limite atual de upload: 1 GB</div>
+                          <button
+                            type="submit"
+                            disabled={!canSubmit}
+                            className="inline-flex h-12 items-center gap-2 rounded-full bg-lime-400 px-5 text-sm font-semibold text-black transition hover:bg-lime-300 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-white/25"
+                          >
+                            {isSubmitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+                            Gerar cortes
+                          </button>
+                        </div>
+                      </label>
+                    </div>
+                  )}
+                </form>
+              </section>
+
+              <aside className="rounded-[24px] border border-white/10 bg-white/[0.03] p-5 backdrop-blur-xl">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-sm font-semibold text-white">Execucao atual</div>
+                    <div className="mt-1 text-sm text-white/50">Fila, progresso e observacoes do processamento.</div>
                   </div>
-                </label>
-              </div>
+                  {jobStatus?.status === "completed" ? (
+                    <CheckCircle2 className="h-5 w-5 text-lime-300" />
+                  ) : jobStatus?.status === "failed" ? (
+                    <AlertCircle className="h-5 w-5 text-red-400" />
+                  ) : (
+                    <Clock3 className="h-5 w-5 text-white/45" />
+                  )}
+                </div>
 
-              <button 
-                type="submit"
-                disabled={isSubmitting || (!url && !file)}
-                className="w-full py-4 bg-teal-500 text-black font-bold rounded-xl hover:bg-teal-400 active:scale-[0.99] transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-3 uppercase tracking-widest text-xs shadow-lg shadow-teal-500/20"
-              >
-                {isSubmitting ? (
-                  <div className="flex flex-col items-center gap-2">
-                    <Loader2 size={18} className="animate-spin" />
-                    {uploadProgress !== null && (
-                      <span className="text-[10px] font-mono">Enviando: {uploadProgress}%</span>
-                    )}
+                <div className="mt-6 space-y-5">
+                  <MetricRow label="Fonte" value={mode === "youtube" ? "YouTube" : "Upload local"} />
+                  <MetricRow label="Status" value={statusLabel} />
+                  <MetricRow label="Progresso" value={`${jobStatus?.progress ?? 0}%`} />
+
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between text-xs uppercase tracking-[0.2em] text-white/38">
+                      <span>Pipeline</span>
+                      <span>{jobStatus?.progress ?? 0}%</span>
+                    </div>
+                    <div className="h-2 overflow-hidden rounded-full bg-white/8">
+                      <motion.div
+                        initial={{ width: 0 }}
+                        animate={{ width: `${jobStatus?.progress ?? 0}%` }}
+                        className="h-full rounded-full bg-gradient-to-r from-lime-300 via-lime-400 to-emerald-400"
+                      />
+                    </div>
                   </div>
-                ) : (
-                  <>
-                    <Sparkles size={18} className="text-black/60" />
-                    Gerar Cortes Virais
-                  </>
-                )}
-              </button>
-            </form>
-          </motion.div>
+
+                  {uploadProgress !== null && (
+                    <div className="rounded-2xl border border-lime-400/20 bg-lime-400/8 p-4 text-sm text-lime-200">
+                      Upload em andamento: {uploadProgress}%
+                    </div>
+                  )}
+
+                  {jobStatus?.error ? (
+                    <div className="rounded-2xl border border-red-500/25 bg-red-500/10 p-4 text-sm leading-6 text-red-200">
+                      {jobStatus.error}
+                    </div>
+                  ) : (
+                    <div className="rounded-2xl border border-white/8 bg-black/30 p-4 text-sm leading-6 text-white/55">
+                      Para videos longos, a transcricao e a analise podem levar alguns minutos. O backend permanece ativo durante o processamento.
+                    </div>
+                  )}
+                </div>
+              </aside>
+            </div>
+          </div>
         </section>
 
-        <AnimatePresence mode="wait">
-          {jobStatus && (
-            <motion.div
-              key={jobStatus.id}
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              className="space-y-8"
-            >
-              {/* Status Section */}
-              <div className="p-6 bg-white/5 rounded-2xl border border-white/10 backdrop-blur-sm shadow-xl">
-                <div className="flex items-center justify-between mb-4">
-                  <div className="flex items-center gap-3">
-                    {jobStatus.status === 'processing' && <Loader2 size={18} className="text-teal-400 animate-spin" />}
-                    {jobStatus.status === 'pending' && <Loader2 size={18} className="text-slate-500 animate-spin" />}
-                    {jobStatus.status === 'completed' && <CheckCircle2 size={18} className="text-teal-400" />}
-                    {jobStatus.status === 'failed' && <AlertCircle size={18} className="text-red-400" />}
-                    <span className="text-[10px] text-teal-400 uppercase tracking-widest font-bold">
-                      {jobStatus.status === 'processing' ? 'Analysing Data...' : jobStatus.status}
-                    </span>
+        <section className="mx-auto max-w-7xl px-6 pb-16">
+          <div className="flex items-center justify-between border-b border-white/8 pb-4">
+            <div>
+              <div className="flex items-center gap-2 text-sm font-semibold text-white">
+                <Trophy className="h-4 w-4 text-lime-300" />
+                Melhores cortes
+              </div>
+              <div className="mt-1 text-sm text-white/48">Os resultados aparecem aqui assim que a analise for concluida.</div>
+            </div>
+            {jobStatus?.result?.length ? (
+              <div className="rounded-full border border-lime-400/20 bg-lime-400/8 px-3 py-1 text-xs font-medium text-lime-200">
+                {jobStatus.result.length} sugestoes
+              </div>
+            ) : null}
+          </div>
+
+          {jobStatus?.result?.length ? (
+            <div className="mt-6 grid gap-5 lg:grid-cols-3">
+              {jobStatus.result.map((cut, index) => (
+                <article
+                  key={`${cut.start}-${cut.end}-${index}`}
+                  className="flex min-h-[340px] flex-col rounded-[22px] border border-white/10 bg-white/[0.03] p-5 transition hover:border-lime-400/30"
+                >
+                  <div className="flex items-start justify-between gap-4">
+                    <div>
+                      <div className="text-[11px] uppercase tracking-[0.22em] text-white/35">Score</div>
+                      <div className="mt-2 text-5xl font-semibold tracking-tight text-lime-300">{cut.score}</div>
+                    </div>
+                    <div className="rounded-full border border-white/10 px-3 py-1 text-[11px] uppercase tracking-[0.2em] text-white/45">
+                      Corte {index + 1}
+                    </div>
                   </div>
-                  <span className="text-slate-500 text-xs font-mono">{jobStatus.progress}%</span>
-                </div>
-                <div className="h-1.5 w-full bg-white/5 rounded-full overflow-hidden">
-                  <motion.div 
-                    initial={{ width: 0 }}
-                    animate={{ width: `${jobStatus.progress}%` }}
-                    className="h-full bg-gradient-to-r from-teal-500 to-blue-500"
-                  />
-                </div>
-                {jobStatus.error && (
-                  <div className="mt-4 p-4 bg-red-500/10 border border-red-500/20 rounded-xl">
-                    <p className="text-red-400 text-xs flex items-center gap-2 font-mono leading-relaxed">
-                      <AlertCircle size={14} className="shrink-0" />
-                      <span className="font-bold uppercase tracking-wider">[ERRO]:</span> {jobStatus.error}
-                    </p>
-                    <p className="mt-2 text-[10px] text-red-400/60 font-mono">
-                      Sugestão: Tente fazer o upload do arquivo MP4/MP3 diretamente se o link do YouTube falhar.
-                    </p>
+
+                  <div className="mt-6 space-y-5">
+                    <div>
+                      <div className="text-[11px] uppercase tracking-[0.22em] text-white/35">Hook sugerido</div>
+                      <p className="mt-2 text-lg font-medium leading-7 text-white">{cut.hook}</p>
+                    </div>
+
+                    <div>
+                      <div className="text-[11px] uppercase tracking-[0.22em] text-white/35">Janela do corte</div>
+                      <p className="mt-2 inline-flex rounded-full border border-white/10 px-3 py-1 text-sm font-mono text-white/72">
+                        {formatTime(cut.start)} - {formatTime(cut.end)}
+                      </p>
+                    </div>
+
+                    <div>
+                      <div className="text-[11px] uppercase tracking-[0.22em] text-white/35">Justificativa do score</div>
+                      <p className="mt-2 text-sm leading-6 text-white/60">{cut.motivo}</p>
+                    </div>
                   </div>
+
+                  <div className="mt-auto flex gap-3 pt-6">
+                    <button
+                      onClick={() => openPreview(cut)}
+                      className="inline-flex h-11 flex-1 items-center justify-center gap-2 rounded-full border border-lime-400/25 bg-lime-400/10 text-sm font-medium text-lime-200 transition hover:bg-lime-400/16"
+                    >
+                      <PlayCircle className="h-4 w-4" />
+                      Assistir
+                    </button>
+                    <button
+                      onClick={() => handleExport(cut, index)}
+                      disabled={(!file && !cut.downloadUrl) || exportingIndex === index}
+                      className="inline-flex h-11 flex-1 items-center justify-center gap-2 rounded-full border border-white/10 bg-white/[0.04] text-sm font-medium text-white/70 transition hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-35"
+                    >
+                      {exportingIndex === index ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+                      Exportar
+                    </button>
+                  </div>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <div className="mt-6 rounded-[24px] border border-dashed border-white/12 bg-white/[0.02] px-8 py-14 text-center">
+              <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.04]">
+                {jobStatus?.status === "processing" || jobStatus?.status === "pending" ? (
+                  <Loader2 className="h-6 w-6 animate-spin text-lime-300" />
+                ) : (
+                  <Scissors className="h-6 w-6 text-white/35" />
                 )}
               </div>
-
-              {/* Results Section */}
-              {jobStatus.result && (
-                <div className="space-y-6">
-                  <div className="flex items-center justify-between border-b border-white/10 pb-4">
-                    <h2 className="text-xs uppercase tracking-[0.3em] font-bold text-white/40 flex items-center gap-2">
-                      <Trophy size={14} className="text-teal-500" />
-                      Resultado Final: Top 3 Cortes Virais
-                    </h2>
-                    {jobStatus.progress === 100 && !jobStatus.result?.[0]?.text && (
-                      <span className="text-[10px] bg-amber-500/10 text-amber-500 px-2 py-1 rounded border border-amber-500/20 font-mono animate-pulse">
-                        SIMULATION_MODE: IA ANALYSIS ONLY
-                      </span>
-                    )}
-                  </div>
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                    {jobStatus.result.map((cut, index) => (
-                      <motion.div
-                        key={index}
-                        initial={{ opacity: 0, y: 20 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        transition={{ delay: index * 0.1 }}
-                        className="group relative bg-black/40 hover:border-teal-500/50 transition-all border border-white/10 rounded-2xl overflow-hidden p-6 flex flex-col"
-                      >
-                        <div className="flex justify-between items-start mb-6">
-                          <span className="text-4xl font-mono font-bold text-teal-500 opacity-80 leading-none">{cut.score}</span>
-                          <span className="text-[9px] bg-teal-500/10 text-teal-400 px-2 py-0.5 rounded uppercase font-bold tracking-widest border border-teal-500/20">Viral Score</span>
-                        </div>
-                        
-                        <div className="space-y-4 flex-1">
-                          <div className="flex items-center justify-between">
-                            <div className="flex flex-col gap-1">
-                              <h3 className="text-[9px] text-white/40 uppercase tracking-widest font-bold">Hook Melhorado:</h3>
-                              <p className="text-sm font-semibold leading-relaxed text-white">"{cut.hook}"</p>
-                            </div>
-                            <button 
-                              onClick={() => {
-                                if (jobStatus?.filePath) {
-                                  // For local uploads, use the filePath from jobStatus (ensuring it's served via /uploads/)
-                                  const videoUrl = jobStatus.filePath.startsWith('uploads') 
-                                    ? `/${jobStatus.filePath}` 
-                                    : `/uploads/${jobStatus.filePath.split('/').pop()}`;
-                                  setPreviewCut({ videoUrl, start: cut.start, end: cut.end });
-                                  return;
-                                }
-
-                                const videoId = extractYoutubeId(url);
-                                if (videoId) {
-                                  setPreviewCut({ videoId, start: cut.start, end: cut.end });
-                                } else {
-                                  console.error("Não foi possível identificar a fonte do vídeo.");
-                                  alert("Não foi possível carregar a prévia deste vídeo.");
-                                }
-                              }}
-                              className={`p-2 rounded-lg border transition-all ${
-                                !url && !jobStatus?.filePath ? 'opacity-20 cursor-not-allowed' : 'text-teal-400 hover:text-teal-300 bg-teal-500/5 border-teal-500/10 group-hover:border-teal-500/30'
-                              }`}
-                              title="Assistir Trecho"
-                              disabled={!url && !jobStatus?.filePath}
-                            >
-                              <PlayCircle size={20} />
-                            </button>
-                            <button 
-                              onClick={() => handleExport(cut, index)}
-                              className={`p-2 rounded-lg border transition-all ${
-                                !file ? 'opacity-20 cursor-not-allowed text-white/20' : 'text-blue-400 hover:text-blue-300 bg-blue-500/5 border-blue-500/10 group-hover:border-blue-500/30'
-                              }`}
-                              title={file ? "Exportar Corte" : "Exportação disponível apenas para uploads"}
-                              disabled={!file || exportingIndex === index}
-                            >
-                              {exportingIndex === index ? (
-                                <Loader2 size={20} className="animate-spin" />
-                              ) : (
-                                <Download size={20} />
-                              )}
-                            </button>
-                          </div>
-
-                          <div className="flex flex-col gap-1">
-                            <h3 className="text-[9px] text-white/40 uppercase tracking-widest font-bold">Segmento:</h3>
-                            <p className="text-xs font-mono text-white/60 bg-white/5 px-2 py-1 rounded inline-block w-fit">
-                              {formatTime(cut.start)} — {formatTime(cut.end)}
-                            </p>
-                          </div>
-
-                          <div className="pt-4 border-t border-white/5 mt-auto">
-                            <p className="text-[10px] italic text-white/40 leading-snug font-sans">
-                              "{cut.motivo}"
-                            </p>
-                          </div>
-                        </div>
-                      </motion.div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </motion.div>
+              <h2 className="mt-5 text-2xl font-semibold text-white">
+                {jobStatus?.status === "processing" || jobStatus?.status === "pending"
+                  ? "O processamento esta em andamento"
+                  : "Nenhum corte gerado ainda"}
+              </h2>
+              <p className="mx-auto mt-3 max-w-2xl text-sm leading-7 text-white/52">
+                {jobStatus?.status === "processing" || jobStatus?.status === "pending"
+                  ? "Assim que a transcricao e a analise terminarem, os melhores trechos aparecem aqui com preview e exportacao."
+                  : "Escolha um modo, envie o video e acompanhe o resultado na mesma tela."}
+              </p>
+            </div>
           )}
-        </AnimatePresence>
+        </section>
       </main>
 
       <AnimatePresence>
-        {previewCut && (
-          <VideoPlayer 
+        {previewCut ? (
+          <VideoPlayer
             videoId={previewCut.videoId}
             videoUrl={previewCut.videoUrl}
             start={previewCut.start}
             end={previewCut.end}
             onClose={() => setPreviewCut(null)}
           />
-        )}
+        ) : null}
       </AnimatePresence>
-
-      <footer className="h-12 border-t border-white/10 flex items-center justify-between px-8 bg-black text-[10px] font-mono text-white/40 relative z-20">
-        <div className="flex gap-4">
-          <span>NODE_ENV: production</span>
-          <span className="hidden sm:inline">FFMPEG: v6.0-static</span>
-        </div>
-        <div className="flex gap-4">
-          <span className="flex items-center gap-1.5 uppercase">
-            <span className="w-1.5 h-1.5 bg-teal-500 rounded-full animate-pulse"></span>
-            System Health: Optimal
-          </span>
-        </div>
-      </footer>
     </div>
   );
 }
 
-function extractYoutubeId(url: string): string | null {
+function ModeButton({
+  active,
+  icon: Icon,
+  label,
+  onClick,
+}: {
+  active: boolean;
+  icon: React.ComponentType<{ className?: string }>;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`inline-flex h-11 items-center gap-2 rounded-full border px-4 text-sm transition ${
+        active
+          ? "border-lime-400/35 bg-lime-400/10 text-lime-200"
+          : "border-white/10 bg-white/[0.03] text-white/58 hover:bg-white/[0.06]"
+      }`}
+    >
+      <Icon className="h-4 w-4" />
+      {label}
+    </button>
+  );
+}
+
+function MetricRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between gap-3 border-b border-white/6 pb-3 text-sm">
+      <span className="text-white/42">{label}</span>
+      <span className="font-medium text-white">{value}</span>
+    </div>
+  );
+}
+
+function StatusPill({ label, tone }: { label: string; tone: "green" | "red" | "neutral" }) {
+  const styles =
+    tone === "green"
+      ? "border-lime-400/20 bg-lime-400/10 text-lime-200"
+      : tone === "red"
+        ? "border-red-500/20 bg-red-500/10 text-red-200"
+        : "border-white/10 bg-white/[0.04] text-white/58";
+
+  return <div className={`rounded-full border px-3 py-1.5 ${styles}`}>{label}</div>;
+}
+
+function extractYoutubeId(input: string): string | null {
   const regExp = /^.*((youtu.be\/)|(v\/)|(\/u\/\w\/)|(embed\/)|(watch\?))\??v?=?([^#&?]*).*/;
-  const match = url.match(regExp);
-  return (match && match[7].length === 11) ? match[7] : null;
+  const match = input.match(regExp);
+  return match && match[7].length === 11 ? match[7] : null;
 }
 
 function formatTime(seconds: number): string {
   const mins = Math.floor(seconds / 60);
   const secs = Math.floor(seconds % 60);
-  return `${mins}:${secs.toString().padStart(2, '0')}`;
+  return `${mins}:${secs.toString().padStart(2, "0")}`;
 }
